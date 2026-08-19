@@ -66,6 +66,7 @@ export const localVault = {
   loadDrafts: () => readKind<Draft>("draft"),
   saveEntry: (entry: JournalEntry) => putEncrypted(entry.id, "entry", entry),
   saveDraft: (draft: Draft) => putEncrypted(draft.id, "draft", draft),
+  deleteEntry: (id: string) => getDatabase().records.delete(id),
   deleteDraft: (id: string) => getDatabase().records.delete(id),
   clear: () => getDatabase().delete(),
 };

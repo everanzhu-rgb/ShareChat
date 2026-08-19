@@ -37,6 +37,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { localVault } from "../lib/local-vault";
 import {
+  deleteCloudEntry,
   loadCloudAccessKey,
   loadCloudAttachmentPreview,
   loadCloudEntries,
@@ -199,6 +200,8 @@ export function QijianApp() {
             setCloudState("connected");
           } catch {
             setCloudState("error");
+            setCloudGateDismissed(true);
+            setNotice("云端暂时未连接，已继续使用本机内容；恢复网络后会再次同步。");
           }
         }
       } catch {
@@ -469,12 +472,25 @@ export function QijianApp() {
   const moveToTrash = async (entry: JournalEntry) => {
     await persistEntry({ ...entry, status: "trash", updatedAt: new Date().toISOString() });
     setSheet("none");
-    setNotice("这页已移到回收站，30 天内可以恢复。");
+    setNotice("这页已移到回收站；恢复前不会展示，彻底删除后无法找回。");
   };
 
   const restoreEntry = async (entry: JournalEntry) => {
     await persistEntry({ ...entry, status: "published", updatedAt: new Date().toISOString() });
     setNotice("这页已经回到原来的位置。");
+  };
+
+  const permanentlyDeleteEntry = async (entry: JournalEntry) => {
+    const confirmed = window.confirm(`确定彻底删除“${entry.title}”吗？D1 中的手记数据和 R2 中的所有附件都会立即删除，且无法恢复。`);
+    if (!confirmed) return;
+    try {
+      if (cloudAccessKey) await deleteCloudEntry(cloudAccessKey, entry.id);
+      await localVault.deleteEntry(entry.id);
+      setEntries((current) => current.filter((item) => item.id !== entry.id));
+      setNotice("已从本机、D1 和 R2 彻底删除，无法恢复。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "彻底删除失败，请稍后重试。");
+    }
   };
 
   return (
@@ -576,6 +592,7 @@ export function QijianApp() {
         <TrashSheet
           entries={entries.filter((entry) => entry.status === "trash")}
           onRestore={(entry) => void restoreEntry(entry)}
+          onDelete={(entry) => void permanentlyDeleteEntry(entry)}
           onClose={() => setSheet("none")}
         />
       )}
@@ -587,7 +604,7 @@ export function QijianApp() {
           <button onClick={() => setNotice(null)} aria-label="关闭提示"><X size={15} /></button>
         </div>
       )}
-      {!cloudGateDismissed && (cloudState === "needs-key" || cloudState === "error" || cloudState === "checking") && (
+      {!cloudGateDismissed && (cloudState === "needs-key" || cloudState === "checking") && (
         <CloudGate
           value={cloudKeyInput}
           state={cloudState}
@@ -606,7 +623,7 @@ function CloudGate({ value, state, onValue, onConnect, onLocal }: { value: strin
       <div className="cloud-gate-card">
         <span className="cloud-gate-icon"><Cloud size={27} /></span>
         <h2>连接你们的共同空间</h2>
-        <p>在两台 iPhone 上输入同一个口令，手记会存入 D1，照片、视频和语音会安全传到私有 R2。</p>
+        <p>每台 iPhone 只需首次输入同一个口令，之后会自动进入。手记存入 D1，照片、视频和语音传到私有 R2。</p>
         <input
           type="password"
           value={value}
@@ -735,12 +752,12 @@ function UsView({ dark, onDark, onSettings, onTrash }: { dark: boolean; onDark: 
       <div className="page-title"><span className="eyebrow">JUST FOR TWO</span><h1>我们的空间</h1><p>两个人，和一处安静保存日常的地方。</p></div>
       <section className="couple-card"><div className="couple-orbit"><span>栖</span><i><Heart size={15} fill="currentColor" /></i><span>安</span></div><strong>在一起的第 1,284 天</strong><p>共同写下 42 页 · 留下 118 次回应</p></section>
       <section className="settings-group">
-        <button><span className="setting-icon sage"><ShieldCheck size={19} /></span><span><strong>安全与设备</strong><small>恢复短语、设备验证、登录记录</small></span><ChevronRight size={18} /></button>
+        <button><span className="setting-icon sage"><ShieldCheck size={19} /></span><span><strong>安全与设备</strong><small>高级加密、设备验证与登录记录 · 未来开发</small></span><ChevronRight size={18} /></button>
         <button onClick={() => onDark(!dark)}><span className="setting-icon violet"><Palette size={19} /></span><span><strong>暮纸主题</strong><small>{dark ? "深色墨夜" : "跟随温暖纸白"}</small></span><span className={dark ? "switch on" : "switch"}><i /></span></button>
         <button onClick={onSettings}><span className="setting-icon amber"><Bell size={19} /></span><span><strong>通知与安静时段</strong><small>默认只提示“有一份新心意”</small></span><ChevronRight size={18} /></button>
-        <button onClick={onTrash}><span className="setting-icon rose"><ArchiveRestore size={19} /></span><span><strong>回收站</strong><small>删除的内容保留 30 天</small></span><ChevronRight size={18} /></button>
+        <button onClick={onTrash}><span className="setting-icon rose"><ArchiveRestore size={19} /></span><span><strong>回收站</strong><small>可恢复，或手动彻底删除</small></span><ChevronRight size={18} /></button>
       </section>
-      <div className="privacy-note"><LockKeyhole size={18} /><div><strong>内容先在设备上加密</strong><p>当前演示数据保存在这台设备的加密本机空间。接入服务器后，服务器也只保存密文。</p></div></div>
+      <div className="privacy-note"><LockKeyhole size={18} /><div><strong>本机内容受到加密保护</strong><p>云端内容由共同空间口令隔离并保存在私有 D1 与 R2；更完整的端到端加密留待后续版本。</p></div></div>
     </div>
   );
 }
@@ -782,8 +799,8 @@ function NotificationsSheet({ onClose }: { onClose: () => void }) {
   return <section className="sheet compact-sheet" role="dialog" aria-modal="true" aria-label="通知"><div className="sheet-handle" /><header className="sheet-title"><div><span className="eyebrow">A QUIET NOTE</span><h2>新心意</h2></div><button onClick={onClose}><X size={20} /></button></header><div className="notification-list"><div><span className="notification-icon"><Heart size={18} /></span><p><strong>你收到了一份新心意</strong><small>解锁后可以查看 · 12 分钟前</small></p><i /></div><div><span className="notification-icon"><MessageCircle size={18} /></span><p><strong>栖笺里有一条新的回应</strong><small>内容不会显示在锁屏通知中 · 昨天</small></p></div><div><span className="notification-icon"><ShieldCheck size={18} /></span><p><strong>本机草稿受到加密保护</strong><small>服务器接入后也只会保存密文</small></p></div></div></section>;
 }
 
-function TrashSheet({ entries, onRestore, onClose }: { entries: JournalEntry[]; onRestore: (entry: JournalEntry) => void; onClose: () => void }) {
-  return <section className="sheet compact-sheet" role="dialog" aria-modal="true" aria-label="回收站"><div className="sheet-handle" /><header className="sheet-title"><div><span className="eyebrow">30 DAYS TO RESTORE</span><h2>回收站</h2></div><button onClick={onClose}><X size={20} /></button></header>{entries.length ? <div className="trash-list">{entries.map((entry) => <div key={entry.id}><span><strong>{entry.title}</strong><small>29 天后自动清理</small></span><button onClick={() => onRestore(entry)}><ArchiveRestore size={16} /> 恢复</button></div>)}</div> : <div className="empty-state"><ArchiveRestore size={28} /><h3>这里很干净</h3><p>删除的内容会在这里保留 30 天。</p></div>}</section>;
+function TrashSheet({ entries, onRestore, onDelete, onClose }: { entries: JournalEntry[]; onRestore: (entry: JournalEntry) => void; onDelete: (entry: JournalEntry) => void; onClose: () => void }) {
+  return <section className="sheet compact-sheet" role="dialog" aria-modal="true" aria-label="回收站"><div className="sheet-handle" /><header className="sheet-title"><div><span className="eyebrow">RESTORE OR DELETE</span><h2>回收站</h2></div><button onClick={onClose}><X size={20} /></button></header>{entries.length ? <div className="trash-list">{entries.map((entry) => <div key={entry.id}><span><strong>{entry.title}</strong><small>彻底删除后将同时清除云端附件</small></span><span className="trash-actions"><button onClick={() => onRestore(entry)}><ArchiveRestore size={16} /> 恢复</button><button className="delete-forever" onClick={() => onDelete(entry)}><Trash2 size={16} /> 彻底删除</button></span></div>)}</div> : <div className="empty-state"><ArchiveRestore size={28} /><h3>这里很干净</h3><p>移入回收站的内容会显示在这里。</p></div>}</section>;
 }
 
 function SettingsSheet({ onClose }: { onClose: () => void }) {

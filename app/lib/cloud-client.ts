@@ -53,6 +53,15 @@ export async function saveCloudEntry(
   });
 }
 
+export async function deleteCloudEntry(
+  accessKey: string,
+  entryId: string,
+): Promise<void> {
+  await cloudFetch(accessKey, `/api/entries/${encodeURIComponent(entryId)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function uploadCloudAttachment(
   accessKey: string,
   attachmentId: string,

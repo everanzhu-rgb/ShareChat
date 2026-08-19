@@ -18,6 +18,7 @@ interface R2ObjectBody { body: ReadableStream<Uint8Array> }
 interface R2Bucket {
   put(key: string, value: ReadableStream | ArrayBuffer | Blob): Promise<unknown>;
   get(key: string): Promise<R2ObjectBody | null>;
+  delete(key: string): Promise<void>;
 }
 interface Env {
   ASSETS: { fetch(request: Request): Promise<Response> };
@@ -37,6 +38,7 @@ interface ExecutionContext {
   passThroughOnException(): void;
 }
 type EntryRow = { payload_json: string };
+type ChunkRow = { object_key: string };
 type AttachmentRow = {
   id: string; filename: string; mime_type: string; byte_size: number;
   chunk_count: number; status: string;
@@ -84,6 +86,39 @@ async function handleEntries(request: Request, env: Env, url: URL): Promise<Resp
     return json({ ok: true });
   }
   return json({ error: "Method not allowed" }, 405);
+}
+
+async function handleDeleteEntry(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== "DELETE") return json({ error: "Method not allowed" }, 405);
+  const id = decodeURIComponent(url.pathname.split("/").filter(Boolean)[2] ?? "");
+  if (!safeId(id)) return json({ error: "手记编号无效" }, 400);
+
+  const row = await env.DB.prepare("SELECT payload_json FROM entries WHERE id = ?")
+    .bind(id).first<EntryRow>();
+  if (!row) return json({ error: "手记不存在" }, 404);
+
+  let entry: { status?: unknown; attachments?: Array<{ id?: unknown; cloudId?: unknown }> };
+  try { entry = JSON.parse(row.payload_json) as typeof entry; }
+  catch { return json({ error: "手记数据损坏，无法安全删除" }, 500); }
+  if (entry.status !== "trash") return json({ error: "请先把手记移到回收站" }, 409);
+
+  const attachmentIds = Array.from(new Set((entry.attachments ?? []).flatMap((attachment) => {
+    const candidate = typeof attachment.cloudId === "string" ? attachment.cloudId : attachment.id;
+    return typeof candidate === "string" && safeId(candidate) ? [candidate] : [];
+  })));
+
+  for (const attachmentId of attachmentIds) {
+    const chunks = await env.DB.prepare(
+      "SELECT object_key FROM attachment_chunks WHERE attachment_id = ? ORDER BY chunk_index",
+    ).bind(attachmentId).all<ChunkRow>();
+    await Promise.all((chunks.results ?? []).map((chunk) => env.MEDIA.delete(chunk.object_key)));
+    await env.DB.prepare("DELETE FROM attachment_chunks WHERE attachment_id = ?").bind(attachmentId).run();
+    await env.DB.prepare("DELETE FROM attachments WHERE id = ?").bind(attachmentId).run();
+  }
+
+  await env.DB.prepare("DELETE FROM sync_events WHERE entity_id = ?").bind(id).run();
+  await env.DB.prepare("DELETE FROM entries WHERE id = ?").bind(id).run();
+  return json({ ok: true, deletedAttachments: attachmentIds.length });
 }
 
 async function handleAttachment(request: Request, env: Env, ctx: ExecutionContext, url: URL): Promise<Response> {
@@ -172,6 +207,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext, url:
   }
   if (!authorized(request, env)) return json({ error: "共同空间口令不正确" }, 401);
   if (url.pathname === "/api/entries") return handleEntries(request, env, url);
+  if (/^\/api\/entries\/[^/]+$/.test(url.pathname)) return handleDeleteEntry(request, env, url);
   if (url.pathname.startsWith("/api/attachments/")) return handleAttachment(request, env, ctx, url);
   return json({ error: "API not found" }, 404);
 }
