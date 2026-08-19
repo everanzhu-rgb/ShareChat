@@ -295,7 +295,7 @@ export function QijianApp() {
       });
       setCloudState("connected");
       setCloudGateDismissed(true);
-      setNotice("已连接你们的加密云端空间。");
+      setNotice("已连接你们的私密云端空间。");
     } catch (error) {
       setCloudState("error");
       setNotice(error instanceof Error ? error.message : "无法连接云端空间。");
