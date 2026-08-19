@@ -1,35 +1,12 @@
 import vinext from "vinext";
 import { defineConfig } from "vite";
-import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
-
-const SHARECHAT_D1_DATABASE_ID = "b53fb8ce-cbcf-4c68-8ef7-0ec901d4f851";
-
-const { d1, r2 } = hostingConfig;
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 const localBindingConfig = {
   main: "./worker/index.ts",
-  compatibility_flags: ["nodejs_compat"],
-  d1_databases: d1
-    ? [
-        {
-          binding: d1,
-          database_name: "sharechat-prod",
-          database_id: SHARECHAT_D1_DATABASE_ID,
-        },
-      ]
-    : [],
-  r2_buckets: r2
-    ? [
-        {
-          binding: r2,
-          bucket_name: "sharechat-media-prod",
-        },
-      ]
-    : [],
 };
 
 export default defineConfig(async () => {
