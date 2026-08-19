@@ -1,0 +1,7 @@
+tunnel: YOUR_TUNNEL_ID
+credentials-file: /run/secrets/cloudflared-credentials.json
+
+ingress:
+  - hostname: qijian.everanz.com
+    service: http://web:3000
+  - service: http_status:404

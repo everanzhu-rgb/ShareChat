@@ -1,0 +1,15 @@
+{
+  "name": "栖笺 · 我们的手记",
+  "short_name": "栖笺",
+  "description": "让两个人的日常，有一处安静栖居。",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f0e8",
+  "theme_color": "#f4f0e8",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
