@@ -64,7 +64,7 @@
 3. 完成 Passkey、恢复密钥和 Apple 登录；
 4. 完成跨情侣隔离与端到端测试；
 5. 完成备份恢复演练；
-6. 创建 Cloudflare Tunnel 和 `qijian.everanz.com`。
+6. Cloudflare 生产环境已使用 `sharechat.everanz.com`、D1 与私有 R2；配置见 `docs/CLOUDFLARE_PRODUCTION.md`。
 
 ## 关键文档
 

@@ -18,6 +18,11 @@ export interface Attachment {
   label: string;
   detail?: string;
   previewUrl?: string;
+  cloudId?: string;
+  cloudState?: "uploading" | "ready" | "failed";
+  mimeType?: string;
+  size?: number;
+  chunkCount?: number;
 }
 
 export interface Comment {

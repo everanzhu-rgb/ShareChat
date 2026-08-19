@@ -14,7 +14,9 @@
     "typecheck": "tsc --noEmit",
     "check": "npm run lint && npm run typecheck && npm run test && npm run build",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:remote": "wrangler d1 execute sharechat-prod --remote --file=drizzle/0001_sharechat_d1.sql",
+    "deploy:cloudflare": "npm run build && wrangler deploy --config dist/server/wrangler.json --name sharechat --domain sharechat.everanz.com"
   },
   "dependencies": {
     "@scure/bip39": "^2.3.0",

@@ -10,6 +10,7 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
+  Cloud,
   CloudOff,
   Feather,
   Heart,
@@ -35,6 +36,15 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { localVault } from "../lib/local-vault";
+import {
+  loadCloudAccessKey,
+  loadCloudAttachmentPreview,
+  loadCloudEntries,
+  saveCloudAccessKey,
+  saveCloudEntry,
+  uploadCloudAttachment,
+  verifyCloudAccess,
+} from "../lib/cloud-client";
 import { seedEntries } from "../lib/seed";
 import type {
   Attachment,
@@ -47,6 +57,7 @@ import type {
 type Tab = "today" | "journals" | "calendar" | "us";
 type Sheet = "none" | "compose" | "entry" | "notifications" | "trash" | "settings";
 type SaveState = "saved" | "saving" | "offline";
+type CloudState = "checking" | "needs-key" | "connected" | "error";
 
 const moods = ["平静", "想念", "温柔", "雀跃", "疲惫", "复杂"];
 const reactions = ["抱抱", "我们懂", "✨", "☕"];
@@ -137,6 +148,10 @@ export function QijianApp() {
   const [showMemory, setShowMemory] = useState(true);
   const [attachmentMenu, setAttachmentMenu] = useState(false);
   const [search, setSearch] = useState("");
+  const [cloudAccessKey, setCloudAccessKey] = useState("");
+  const [cloudKeyInput, setCloudKeyInput] = useState("");
+  const [cloudState, setCloudState] = useState<CloudState>("checking");
+  const [cloudGateDismissed, setCloudGateDismissed] = useState(false);
   const initialized = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -154,6 +169,37 @@ export function QijianApp() {
         if (drafts.length > 0) {
           drafts.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
           setDraft(drafts[0]);
+        }
+
+        const savedKey = loadCloudAccessKey();
+        if (!savedKey) {
+          setCloudState("needs-key");
+        } else {
+          setCloudAccessKey(savedKey);
+          setCloudKeyInput(savedKey);
+          try {
+            await verifyCloudAccess(savedKey);
+            const cloudEntries = await loadCloudEntries(savedKey);
+            const localEntries = storedEntries.length > 0 ? storedEntries : seedEntries;
+            const merged = new Map(localEntries.map((entry) => [entry.id, entry]));
+            for (const remote of cloudEntries) {
+              const local = merged.get(remote.id);
+              if (!local || remote.updatedAt >= local.updatedAt) merged.set(remote.id, remote);
+            }
+            const hydrated = await Promise.all(Array.from(merged.values()).map(async (entry) => ({
+              ...entry,
+              attachments: await Promise.all(entry.attachments.map(async (attachment) => {
+                if (attachment.previewUrl || !attachment.cloudId) return attachment;
+                const previewUrl = await loadCloudAttachmentPreview(savedKey, attachment).catch(() => undefined);
+                return previewUrl ? { ...attachment, previewUrl } : attachment;
+              })),
+            })));
+            setEntries(hydrated);
+            await Promise.all(hydrated.map((entry) => localVault.saveEntry(entry)));
+            setCloudState("connected");
+          } catch {
+            setCloudState("error");
+          }
         }
       } catch {
         setNotice("本机加密存储暂时不可用，当前内容只会保留到本次打开结束。");
@@ -227,6 +273,35 @@ export function QijianApp() {
 
   const memory = sharedEntries[0];
 
+  const connectCloud = async () => {
+    const nextKey = cloudKeyInput.trim();
+    if (!nextKey) {
+      setNotice("请输入共同空间口令。");
+      return;
+    }
+    setCloudState("checking");
+    try {
+      await verifyCloudAccess(nextKey);
+      saveCloudAccessKey(nextKey);
+      setCloudAccessKey(nextKey);
+      const remote = await loadCloudEntries(nextKey);
+      setEntries((current) => {
+        const merged = new Map(current.map((entry) => [entry.id, entry]));
+        for (const entry of remote) {
+          const local = merged.get(entry.id);
+          if (!local || entry.updatedAt >= local.updatedAt) merged.set(entry.id, entry);
+        }
+        return Array.from(merged.values());
+      });
+      setCloudState("connected");
+      setCloudGateDismissed(true);
+      setNotice("已连接你们的加密云端空间。");
+    } catch (error) {
+      setCloudState("error");
+      setNotice(error instanceof Error ? error.message : "无法连接云端空间。");
+    }
+  };
+
   const persistEntry = useCallback(async (entry: JournalEntry) => {
     setEntries((current) => {
       const existing = current.some((item) => item.id === entry.id);
@@ -236,10 +311,11 @@ export function QijianApp() {
     });
     try {
       await localVault.saveEntry(entry);
+      if (cloudAccessKey) await saveCloudEntry(cloudAccessKey, entry);
     } catch {
-      setNotice("这次修改只保留在当前页面，请稍后再试。");
+      setNotice(cloudAccessKey ? "已保存在本机，但云端同步暂时失败。" : "这次修改只保留在当前页面，请稍后再试。");
     }
-  }, []);
+  }, [cloudAccessKey]);
 
   const openEntry = (id: string) => {
     setSelectedEntryId(id);
@@ -314,14 +390,50 @@ export function QijianApp() {
 
   const handleFiles = (files: FileList | null) => {
     if (!files) return;
-    const next: Attachment[] = Array.from(files).map((file) => ({
-      id: uid(file.type.startsWith("video/") ? "video" : "photo"),
-      kind: file.type.startsWith("video/") ? "video" : "photo",
-      label: file.name || "来自相册的回忆",
-      detail: `${Math.max(1, Math.round(file.size / 1024))} KB · 已加入本机草稿`,
-      previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined,
-    }));
+    const selected = Array.from(files);
+    const next: Attachment[] = selected.map((file) => {
+      const id = uid(file.type.startsWith("video/") ? "video" : "photo");
+      return {
+        id,
+        kind: file.type.startsWith("video/") ? "video" : "photo",
+        label: file.name || "来自相册的回忆",
+        detail: `${Math.max(1, Math.round(file.size / 1024))} KB · ${cloudAccessKey ? "准备上传云端" : "已加入本机草稿"}`,
+        previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined,
+        cloudId: cloudAccessKey ? id : undefined,
+        cloudState: cloudAccessKey ? "uploading" : undefined,
+        mimeType: file.type,
+        size: file.size,
+      };
+    });
     setDraft((current) => ({ ...current, attachments: [...current.attachments, ...next] }));
+
+    if (cloudAccessKey) {
+      selected.forEach((file, index) => {
+        const attachment = next[index];
+        void uploadCloudAttachment(cloudAccessKey, attachment.id, file, (completed, total) => {
+          setDraft((current) => ({
+            ...current,
+            attachments: current.attachments.map((item) => item.id === attachment.id
+              ? { ...item, detail: `正在上传云端 · ${completed}/${total}` }
+              : item),
+          }));
+        }).then((cloud) => {
+          setDraft((current) => ({
+            ...current,
+            attachments: current.attachments.map((item) => item.id === attachment.id
+              ? { ...item, ...cloud, detail: `${Math.max(1, Math.round(file.size / 1024))} KB · 已安全上传` }
+              : item),
+          }));
+        }).catch(() => {
+          setDraft((current) => ({
+            ...current,
+            attachments: current.attachments.map((item) => item.id === attachment.id
+              ? { ...item, cloudState: "failed", detail: "云端上传失败 · 文件仍保留在本机" }
+              : item),
+          }));
+        });
+      });
+    }
   };
 
   const addReaction = async (emoji: string) => {
@@ -377,6 +489,7 @@ export function QijianApp() {
           </button>
           <div className="top-actions">
             {!online && <span className="offline-chip"><CloudOff size={13} /> 离线</span>}
+            {online && cloudState === "connected" && <span className="cloud-chip"><Cloud size={13} /> 已同步</span>}
             <button className="icon-button" onClick={() => setSheet("notifications")} aria-label="通知">
               <Bell size={19} />
               <span className="notification-dot" />
@@ -474,7 +587,41 @@ export function QijianApp() {
           <button onClick={() => setNotice(null)} aria-label="关闭提示"><X size={15} /></button>
         </div>
       )}
+      {!cloudGateDismissed && (cloudState === "needs-key" || cloudState === "error" || cloudState === "checking") && (
+        <CloudGate
+          value={cloudKeyInput}
+          state={cloudState}
+          onValue={setCloudKeyInput}
+          onConnect={() => void connectCloud()}
+          onLocal={() => setCloudGateDismissed(true)}
+        />
+      )}
     </main>
+  );
+}
+
+function CloudGate({ value, state, onValue, onConnect, onLocal }: { value: string; state: CloudState; onValue: (value: string) => void; onConnect: () => void; onLocal: () => void }) {
+  return (
+    <div className="cloud-gate" role="dialog" aria-modal="true" aria-label="连接共同空间">
+      <div className="cloud-gate-card">
+        <span className="cloud-gate-icon"><Cloud size={27} /></span>
+        <h2>连接你们的共同空间</h2>
+        <p>在两台 iPhone 上输入同一个口令，手记会存入 D1，照片、视频和语音会安全传到私有 R2。</p>
+        <input
+          type="password"
+          value={value}
+          onChange={(event) => onValue(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter") onConnect(); }}
+          placeholder="共同空间口令"
+          autoComplete="current-password"
+        />
+        <button className="cloud-connect" onClick={onConnect} disabled={state === "checking"}>
+          {state === "checking" ? "正在连接…" : "连接并同步"}
+        </button>
+        <button className="cloud-local" onClick={onLocal}>暂时只在本机体验</button>
+        <small><LockKeyhole size={12} /> R2 文件不公开，不生成公共下载链接</small>
+      </div>
+    </div>
   );
 }
 
